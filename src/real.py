@@ -10,14 +10,16 @@ import shap
 import torch
 import xgboost as xgb
 import xlearn as xl
+from kan import KAN
 from lightning.pytorch import Trainer, seed_everything
 from path_explain import PathExplainerTorch
 from sklearn.utils import compute_class_weight
+from torch.utils.data import DataLoader
 
 from knockoffs import (gen_DeepKnockoffs, gen_KnockoffGAN, gen_Knockoffsdiag,
                        gen_VAEKnockoff)
-from models import model_utils
-from sim import DataModule, DeepPINKModel
+from models import DeepPink, model_utils
+from sim import DataModule, DeepPinkModel
 from utils import prep_data
 
 
@@ -38,10 +40,6 @@ def load_and_preprocess_data(dataset, knockoff, seed):
         task = 'regression'
     elif dataset == "diabetes":
         X, Y, feat_names = prep_data.load_diabetes_data()
-        inter_gt, import_gt = [], []
-        task = 'regression'
-    elif dataset == "cal_housing":
-        X, Y, feat_names = prep_data.load_cal_housing_data()
         inter_gt, import_gt = [], []
         task = 'regression'
     else:
@@ -65,7 +63,7 @@ def load_and_preprocess_data(dataset, knockoff, seed):
 def train_and_explain(seed, dataset, model_type, knockoff, *args, **kwargs):
     # Create output directory if it does not exist
     output_dir = f'../output/real/{dataset}/{model_type}_{knockoff}'
-    if model_type == 'nn':
+    if model_type in ['mlp', 'cnn', 'transformer']:
         output_dir += f'_{kwargs["explainer"]}'
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
@@ -89,7 +87,7 @@ def train_and_explain(seed, dataset, model_type, knockoff, *args, **kwargs):
         class_weights = compute_class_weight(class_weight='balanced', classes=np.unique(Y), y=Y.ravel())
         pos_weight = class_weights[1] / class_weights[0]
 
-    if model_type == 'nn':
+    if model_type in ['mlp', 'cnn', 'transformer']:
         data_module = DataModule(X, X, X, Y, Y, Y, batch_size=128)
 
         # Define the criterion
@@ -103,35 +101,95 @@ def train_and_explain(seed, dataset, model_type, knockoff, *args, **kwargs):
                 criterion = torch.nn.MSELoss()
 
         # Train the model
-        model = DeepPINKModel(num_features=num_features, 
-                              pairwise_layer=True, 
-                              criterion=criterion)
+        if model_type == 'mlp':
+            model = DeepPink.DeepPINK(p=num_features, model_type='mlp', hidden_dims=[140, 100, 60, 20])
+        elif model_type == 'cnn':
+            model = DeepPink.DeepPINK(p=num_features, model_type='cnn')
+        elif model_type == 'transformer':
+            model = DeepPink.DeepPINK(p=num_features, model_type='transformer')
+        model = DeepPinkModel(model, criterion=torch.nn.MSELoss())
+
         trainer = Trainer(max_epochs=100, 
                           accelerator='gpu' if torch.cuda.is_available() else 'cpu')
         trainer.fit(model, data_module)
 
-        if kwargs['explainer'] == 'topo':
+        if kwargs['explainer'] == 'topo' and model_type == 'mlp':
             attributions, interactions = model.model.global_feature_interactions()
         else:
             # Get the test dataset
-            test_dataset = torch.tensor(X, dtype=torch.float32, device=model.device)
+            test_dataset = torch.tensor(X, dtype=torch.float32, device=device)
             test_dataset.requires_grad = True
 
             if kwargs['explainer'] == 'ig':
-                baseline = torch.zeros((1, num_features * 2), device=model.device)
+                baseline = torch.zeros((1, num_features * 2), device=device)
                 use_expectation = False
             elif kwargs['explainer'] == 'eg':
-                baseline = torch.tensor(X, dtype=torch.float32, device=model.device)
+                baseline = torch.tensor(X, dtype=torch.float32, device=device)
                 use_expectation = True
             else:
                 RuntimeError('Invalid explainer')
 
             # Initialize the explainer with the model
+            model.model.to(device)
             explainer = PathExplainerTorch(model.model)
 
             # Compute attributions and interactions
-            attributions = explainer.attributions(test_dataset, baseline=baseline, use_expectation=use_expectation).detach().cpu().numpy()
-            interactions = explainer.interactions(test_dataset, baseline=baseline, use_expectation=use_expectation).detach().cpu().numpy()
+            if model_type == 'transformer':
+                attributions = []
+                interactions = []
+                for batch in DataLoader(test_dataset, batch_size=256):
+                    attributions.append(explainer.attributions(batch, baseline=baseline, use_expectation=use_expectation).detach().cpu().numpy())
+                    interactions.append(explainer.interactions(batch, baseline=baseline, use_expectation=use_expectation).detach().cpu().numpy())
+                
+                attributions = np.concatenate(attributions, axis=0)
+                interactions = np.concatenate(interactions, axis=0)
+            else:
+                attributions = explainer.attributions(test_dataset, baseline=baseline, use_expectation=use_expectation).detach().cpu().numpy()
+                interactions = explainer.interactions(test_dataset, baseline=baseline, use_expectation=use_expectation).detach().cpu().numpy()
+
+    elif model_type == 'kan':
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        data = {"train_input": torch.tensor(X, dtype=torch.float32, device=device),
+                   "train_label": torch.tensor(Y, dtype=torch.float32, device=device),
+                   "test_input": torch.tensor(X, dtype=torch.float32, device=device),
+                   "test_label": torch.tensor(Y, dtype=torch.float32, device=device)}
+        
+        # Define the criterion
+        if task == 'classification':
+            pos_weight = torch.tensor([pos_weight], device=device)
+            criterion = torch.nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+        else:
+            if dataset == "mortality":
+                criterion = model_utils.CoxPHLoss()
+            else:
+                criterion = torch.nn.MSELoss()
+
+        # Train the model
+        model = KAN(width=[2 * num_features, num_features // 2, 1], device=device, seed=seed, auto_save=False)
+        model.fit(data, steps=100, loss_fn=criterion, batch=2048)
+
+        # Clear the cache
+        torch.cuda.empty_cache()
+
+        # Get the test dataset
+        test_dataset = torch.tensor(X, dtype=torch.float32, device=device)
+        test_dataset.requires_grad = True
+
+        if kwargs['explainer'] == 'ig':
+            baseline = torch.zeros((1, num_features * 2), device=device)
+            use_expectation = False
+        elif kwargs['explainer'] == 'eg':
+            baseline = torch.tensor(X, dtype=torch.float32, device=device)
+            use_expectation = True
+        else:
+            RuntimeError('Invalid explainer')
+
+        # Initialize the explainer with the model
+        explainer = PathExplainerTorch(model)
+
+        # Compute attributions and interactions
+        attributions = explainer.attributions(test_dataset, baseline=baseline, use_expectation=use_expectation).detach().cpu().numpy()
+        interactions = explainer.interactions(test_dataset, baseline=baseline, use_expectation=use_expectation).detach().cpu().numpy()
 
     elif model_type == 'xgboost':
         # Train the model
@@ -258,9 +316,9 @@ def train_and_explain(seed, dataset, model_type, knockoff, *args, **kwargs):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--seed', type=int, default=1)
+    parser.add_argument('--seed', type=int, required=True)
     parser.add_argument('--dataset', type=str, choices=['enhancer', 'mortality', 'diabetes', 'breast_cancer', 'cal_housing', 'bike_sharing'], required=True)
-    parser.add_argument('--model_type', type=str, choices=['nn', 'xgboost', 'lightgbm', 'fm'], default='nn')
+    parser.add_argument('--model_type', type=str, choices=['mlp', 'cnn', 'transformer', 'kan', 'xgboost', 'lightgbm', 'fm'], required=True)
     parser.add_argument('--knockoff', type=str, default='gan', choices=["knockoffgan", "deepknockoffs", 'vaeknockoff', 'knockoffsdiag'])
     parser.add_argument('--explainer', type=str, choices=['ig', 'eg', 'topo'], default='ig')
     parser.add_argument('--save_local', action='store_true')

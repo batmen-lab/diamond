@@ -1,5 +1,6 @@
 import numpy as np
 
+
 def f_1(x):
     return np.pi ** (x[0] * x[1]) * np.sqrt(2 * x[2]) - \
            (np.arcsin(x[3])) + np.log(1 + x[2] + x[4]) - \
@@ -7,7 +8,7 @@ def f_1(x):
            x[1] * x[6], \
            [{0, 1, 2}, {2, 4}, {6, 7, 8, 9}, {1, 6}], \
            {0, 1, 2, 3, 4, 6, 7, 8, 9}
-
+    
 def f_2(x):
     return np.pi ** (x[0] * x[1]) * np.sqrt(2 * np.abs(x[2])) - \
            (np.arcsin(0.5 * x[3])) + np.log(np.abs(x[2] + x[4]) + 1) - \
@@ -74,6 +75,7 @@ def f_10(x):
            np.cos(x[3] + x[4]) + 1. / np.cos(x[6] * x[8]), \
            [{0, 1}, {2, 4, 6}, {3, 4}, {6, 8}], \
            {0, 1, 2, 3, 4, 6, 8}
+
 
 def generate_interaction_response(X, func_num):
     Y, interct_gt, margin_gt = globals()["f_{}".format(func_num)](X.transpose())

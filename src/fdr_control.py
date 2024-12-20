@@ -32,6 +32,7 @@ def prepare_attribution_dataframe(data: dict) -> pd.DataFrame:
 
     return attribution_df
 
+
 def prepare_interaction_dataframe(data: dict) -> pd.DataFrame:
     attributions = np.array(data['attributions'])
     interactions = np.array(data['interactions'])
@@ -47,6 +48,12 @@ def prepare_interaction_dataframe(data: dict) -> pd.DataFrame:
                                ['False']*len(index_groups['false_pairs']) + 
                                ['Original-Knockoff']*len(index_groups['original_knockoff_pairs']) + 
                                ['Knockoff-Knockoff']*len(index_groups['knockoff_knockoff_pairs'])):
+        '''
+        if i > len(attributions) // 2:
+            continue
+        if i not in data['true_indices'] and j < len(attributions) // 2 and j not in data['true_indices']:
+            continue
+        '''
         record = {
             'seed': data['seed'],
             'dataset': f'F{data["func_num"]}' if 'func_num' in data else data['dataset'],
@@ -55,11 +62,7 @@ def prepare_interaction_dataframe(data: dict) -> pd.DataFrame:
             'type': 'Original' if (i, j) in original_pairs else 'Knockoff',
             'subtype': subtype,
             'interaction': interactions[i, j],
-            'feature1': i,
-            'feature2': j,
             'pair_onehot': np.eye(len(attributions))[i] + np.eye(len(attributions))[j],
-            'attribution1': attributions[i],
-            'attribution2': attributions[j],
             'attr_onehot': np.eye(len(attributions))[i] * attributions[i] + np.eye(len(attributions))[j] * attributions[j]
         }
 
@@ -103,6 +106,7 @@ def fdr_control(data_dir: str, target_fdr: float = 0.2) -> None:
         simulation = True if 'func_num' in data else False
 
         for dataset, files in dataset_files.items():
+            print(f'Processing dataset: {dataset}')
             num_rounds = min(20, len(files)) if simulation else 20
             for round_idx in tqdm(range(num_rounds)):
                 # Set seed
@@ -146,11 +150,7 @@ def fdr_control(data_dir: str, target_fdr: float = 0.2) -> None:
                     'type': 'first',
                     'subtype': 'first',
                     'interaction': 'mean',
-                    'feature1': 'first',
-                    'feature2': 'first',
                     'pair_onehot': 'first',
-                    'attribution1': 'mean',
-                    'attribution2': 'mean',
                     'attr_onehot': 'mean'
                 }).reset_index()
 
@@ -161,10 +161,13 @@ def fdr_control(data_dir: str, target_fdr: float = 0.2) -> None:
                 round_interactions_df['calibrated_interaction'] = round_interactions_df['interaction']
                 attr_onehot = np.array(round_interactions_df['attr_onehot'].values.tolist())
                 pair_onehot = np.array(round_interactions_df['pair_onehot'].values.tolist())
-                if 'xgboost' in data_dir or 'lightgbm' in data_dir or 'fm' in data_dir:
-                    projection_matrix = np.random.normal(size=(num_features, num_features))
-                else:
+                if any(m for m in ['mlp', 'transformer'] if m in data_dir):
                     projection_matrix = np.random.normal(size=(num_features, int(1/3 * num_features)))
+                elif 'cnn' in data_dir:
+                    projection_matrix = np.random.normal(size=(num_features, int(3/2 * num_features)))
+                else:
+                    projection_matrix = np.random.normal(size=(num_features, num_features))
+                
                 projected_pair_onehot = pair_onehot @ projection_matrix
 
                 # Calculate propensity scores
@@ -206,6 +209,8 @@ def fdr_control(data_dir: str, target_fdr: float = 0.2) -> None:
                 calibrated_interactions_original = [(row['pair'], row['calibrated_interaction']) for _, row in round_interactions_df.iterrows() if row['type'] == 'Original']
 
                 # Get selected interactions
+                # selected_uncalibrated, knockoff_statistics_uncalibrated, threshold_uncalibrated = model_utils.get_selected_interactions_ks(uncalibrated_interactions, num_features // 2, target_fdr)
+                # selected_calibrated, knockoff_statistics_calibrated, threshold_calibrated = model_utils.get_selected_interactions_ks(calibrated_interactions, num_features // 2, target_fdr)
                 selected_uncalibrated, threshold_uncalibrated = model_utils.get_selected_interactions(uncalibrated_interactions, num_features // 2, target_fdr)
                 selected_calibrated, threshold_calibrated = model_utils.get_selected_interactions(calibrated_interactions, num_features // 2, target_fdr)
                 true_pairs = [set(pair) for pair in round_interactions_df[round_interactions_df['subtype'] == 'True']['pair']]
@@ -228,7 +233,6 @@ def fdr_control(data_dir: str, target_fdr: float = 0.2) -> None:
                 uncalibrated_q_values = model_utils.get_q_values(uncalibrated_interactions, num_features // 2)
                 calibrated_q_values = model_utils.get_q_values(calibrated_interactions, num_features // 2)
 
-                '''
                 if calibrated_fdr > target_fdr:
                     print(len(selected_calibrated))
                     print(set([pair for pair, _ in selected_calibrated]).intersection(false_pairs))
@@ -236,12 +240,13 @@ def fdr_control(data_dir: str, target_fdr: float = 0.2) -> None:
                     print(f'Uncalibrated FDR:', uncalibrated_fdr, f'Calibrated FDR:', calibrated_fdr)
                     print(f'Uncalibrated Power:', uncalibrated_power, f'Calibrated Power:', calibrated_power)
                     print('-'*50)
-                '''
 
                 round_interactions_df['uncalibrated_threshold'] = threshold_uncalibrated
                 round_interactions_df['calibrated_threshold'] = threshold_calibrated
                 round_interactions_df['uncalibrated_q_values'] = round_interactions_df.apply(lambda row: uncalibrated_q_values[row['pair']], axis=1)
                 round_interactions_df['calibrated_q_values'] = round_interactions_df.apply(lambda row: calibrated_q_values[row['pair']], axis=1)
+                # round_interactions_df['uncalibrated_knockoff_statistics'] = round_interactions_df.apply(lambda row: knockoff_statistics_uncalibrated[row['pair']] if row['type'] == 'Original' else 0, axis=1)
+                # round_interactions_df['calibrated_knockoff_statistics'] = round_interactions_df.apply(lambda row: knockoff_statistics_calibrated[row['pair']] if row['type'] == 'Original' else 0, axis=1)
 
                 record['uncalibrated_auc'] = uncalibrated_auc
                 record['uncalibrated_fdr'] = uncalibrated_fdr

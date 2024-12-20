@@ -12,7 +12,7 @@ from adjustText import adjust_text
 from fdr_control import prepare_interaction_dataframe
 
 
-def plot_interaction_distribution(interactions_df: pd.DataFrame, save_dir: str) -> None:
+def plot_interaction_distribution(interactions_df: pd.DataFrame, save_dir: str, log_scale: bool = False) -> None:
     tab10 = sns.color_palette()
     for dataset in interactions_df['dataset'].unique():
         for seed in interactions_df['seed'].unique():
@@ -41,13 +41,17 @@ def plot_interaction_distribution(interactions_df: pd.DataFrame, save_dir: str) 
                               s=10,
                               alpha=0.8)
                 
+                # Set log scale if specified
+                if log_scale:
+                    plt.yscale('log')
+                
                 plt.title(f'{dataset} - {col}')
                 plt.xlabel('')
                 plt.ylabel('Interaction Score')
+
                 cutoff = interactions_df_func['uncalibrated_threshold'].mean() if col == 'interaction' else interactions_df_func['calibrated_threshold'].mean()
                 if cutoff > 0:
                     plt.axhline(y=cutoff, color='r', linestyle='--', label='Cutoff at target FDR')
-
 
                 # Add legend for 'True' subtype and cutoff line
                 handles, labels = plt.gca().get_legend_handles_labels()
@@ -115,6 +119,7 @@ def plot_attribution_distribution(attributions_df: pd.DataFrame, save_dir: str) 
                 plt.close('all')
 
 def plot_q_values(interactions_df: pd.DataFrame, save_dir: str) -> None:
+    sns.set_theme(style='white')
     tab10 = sns.color_palette()
     original_df = interactions_df[interactions_df['type'] == 'Original']
     grouped = original_df.groupby(['dataset', 'pair']).agg({'uncalibrated_q_values': 'mean', 'calibrated_q_values': 'mean', 'name': 'first', 'subtype': 'first'}).reset_index()
@@ -181,6 +186,55 @@ def plot_q_values(interactions_df: pd.DataFrame, save_dir: str) -> None:
             plt.savefig(f'{save_dir}/{dataset}_{col}_stripplot.pdf')
 
             plt.close('all')
+
+def plot_knockoff_stats(interactions_df: pd.DataFrame, save_dir: str) -> None:
+    tab10 = sns.color_palette()
+    for dataset in interactions_df['dataset'].unique():
+        for seed in interactions_df['seed'].unique():
+            interactions_df_func = interactions_df[(interactions_df['dataset'] == dataset) & (interactions_df['seed'] == seed)]
+            for col in ['uncalibrated_knockoff_statistics', 'calibrated_knockoff_statistics']:
+                np.random.seed(0)
+                plt.figure(figsize=(6, 10))
+
+                # Plot false data
+                false_data = interactions_df_func[interactions_df_func['subtype'] != 'True']
+                false_data = false_data.sort_values(by=col, ascending=False)
+                sns.stripplot(data=false_data,
+                            y=col,
+                            color = tab10[0],
+                            s=10,
+                            alpha=0.8,
+                            jitter=0.2)
+                
+                # Plot true data
+                true_data = interactions_df_func[interactions_df_func['subtype'] == 'True']
+                true_data = true_data.sort_values(by=col, ascending=False)
+                ax = sns.stripplot(data=true_data,
+                            y=col,
+                            color = tab10[3],
+                            marker='*',
+                            s=20,
+                            alpha=0.8,
+                            jitter=0.2)
+                            
+                plt.title(f'{dataset} - {col}')
+                plt.xlabel('')
+                plt.ylabel('Knockoff Statistics')
+                cutoff = interactions_df_func['uncalibrated_threshold'].mean() if col == 'uncalibrated_knockoff_statistics' else interactions_df_func['calibrated_threshold'].mean()
+                if cutoff > 0:
+                    plt.axhline(y=cutoff, color='r', linestyle='--', label='Cutoff at target FDR')
+
+
+                # Add legend for 'True' subtype and cutoff line
+                handles, labels = plt.gca().get_legend_handles_labels()
+                true_patch = plt.Line2D([0], [0], marker='*', color='w', markerfacecolor=tab10[3], label='Ground truth', markersize=12, alpha=0.8)
+                handles.append(true_patch)
+                labels.append('Ground truth')
+                plt.legend(handles=handles, title='')
+                plt.savefig(f'{save_dir}/{dataset}_{col}_{seed}_stripplot.pdf')
+
+                plt.close('all')
+
         
 def plot_metric(results_df: pd.DataFrame, save_dir: str, metric2label: dict, simulation: bool = True) -> None:
     if simulation:
@@ -307,32 +361,46 @@ def visualize_real(data_dir: str) -> None:
     plt.close()
     
     # Plot dependency plots for top 5 and (if applicable) true interactions
-    model_type = 'nn' if 'nn' in data_dir else 'lightgbm' if 'lightgbm' in data_dir else 'xgboost'
+    if 'mlp' in data_dir:
+        model_type = 'mlp'
+    elif 'transformer' in data_dir:
+        model_type = 'transformer'
+    elif 'lightgbm' in data_dir:
+        model_type = 'lightgbm'
+    elif 'xgboost' in data_dir:
+        model_type = 'xgboost'
+    else:
+        model_type = 'mlp'
     names = []
     if dataset == 'enhancer':
         true_names = [(feat_names[i], feat_names[j]) for i, j in true_pairs]
-        if model_type == 'nn':
+        if model_type == 'mlp':
             names = [('wt_ZLD', 'twi'), ('bcd', 'twi'), ('kr', 'twi'), ('sna', 'twi'), ('twi', 'z2')]
         elif model_type == 'lightgbm':
             names = [('H3K18ac', 'med2'), ('gt2', 'twi'), ('med2', 'twi'), ('D1', 'twi'), ('kr', 'twi')]
         elif model_type == 'xgboost':
             names = [('kr', 'twi'), ('D1', 'twi'), ('dl3', 'kni'), ('wt_ZLD', 'twi'), ('wt_ZLD', 'gt2')]
+        elif model_type == 'transformer':
+            names = [('wt_ZLD', 'bcd'), ('wt_ZLD', 'gt2'), ('gt2', 'twi'), ('wt_ZLD', 'twi'), ('wt_ZLD', 'kr')]
         names = list(set(names) | set(true_names))
     elif dataset == 'mortality':
-        if model_type == 'nn':
+        if model_type == 'mlp':
             names = [('BUN', 'Sedimentation rate'), ('platelets_isNormal', 'Sedimentation rate'), ('BUN', 'platelets_isNormal'), ('monocytes', 'Sedimentation rate'), ('BUN', 'urine_pH'), 
                      ('BUN', 'monocytes'), ('Sex', 'Sedimentation rate'), ('BUN', 'creatinine'), ('BUN', 'potassium'), ('urine_hematest_isLarge', 'Sedimentation rate')]
     elif dataset == 'diabetes':
-        names = [('bmi', 's5')]
+        if model_type in ['mlp', 'lightgbm', 'xgboost']:
+            names = [('bmi', 's5')]
+        elif model_type == 'transformer':
+            names = [('age', 'sex'), ('bp', 's3')]
     elif dataset == 'cal_housing':
-        if model_type == 'nn':
+        if model_type == 'mlp':
             names = [('Latitude', 'Longitude'),  ('HouseAge', 'AveBedrms'), ('AveBedrms', 'Latitude'), ('AveBedrms', 'AveOccup'), ('AveRooms', 'Latitude')]
         elif model_type == 'lightgbm':
             names = [('Latitude', 'Longitude'), ('HouseAge', 'Longitude'), ('HouseAge', 'AveOccup'), ('HouseAge', 'Population'), ('MedInc', 'AveBedrms')]
         elif model_type == 'xgboost':
             names = [('Latitude', 'Longitude'), ('HouseAge', 'AveOccup'), ('MedInc', 'AveBedrms'), ('MedInc', 'Population'), ('MedInc', 'AveOccup')]
     elif dataset == 'bike_sharing':
-        if model_type == 'nn':
+        if model_type == 'mlp':
             names = [('temp', 'yr'), ('hr==8', 'weekday==0'), ('workingday', 'atemp'), ('atemp', 'weekday==6'), ('atemp', 'yr==1'), ('workingday', 'yr==0'), ('hum', 'yr==0'), ('workingday', 'temp'), ('temp', 'yr==1')]
 
     names = [(name[0].upper(), name[1].upper()) for name in names]
@@ -407,7 +475,8 @@ def visualize_results(data_dir: str) -> None:
         if simulation:
             plot_metric(fdr_power_df, fig_dir, metric2label, simulation=simulation)
         plot_q_values(interactions_df, fig_dir)
-        plot_interaction_distribution(interactions_df, fig_dir)
+        # plot_knockoff_stats(interactions_df, fig_dir)
+        plot_interaction_distribution(interactions_df, fig_dir, log_scale=False)
         if os.path.exists(attributions_df_path):
             attributions_df = pd.read_csv(attributions_df_path)
             attributions_df['subtype'] = attributions_df['subtype'].astype(str)

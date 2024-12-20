@@ -1,11 +1,16 @@
-import torch, math, copy, random
+import copy
+import math
+import random
 from itertools import combinations
-from torch import nn, optim
-from torch.utils import data
-import torch.nn.functional as F
+
 import numpy as np
+import torch
+import torch.nn.functional as F
 from sklearn.metrics import roc_auc_score
 from sklearn.preprocessing import StandardScaler
+from torch import nn, optim
+from torch.utils import data
+
 
 def get_torch_loaders(X, Y, batch_size, train_ratio=0.7):
     n = X.shape[0]
@@ -188,6 +193,60 @@ def pairwise_interaction_auc(interactions, ground_truth):
     auc = roc_auc_score(gt_binary_list, strengths)
     return auc
 
+def calculate_knockoff_statistics(interaction_tuples, p):
+    # Initialize a dictionary to store the scores for each pair (i, j)
+    score_dict = {(i, j): score for ((i, j), score) in interaction_tuples}
+
+    # Initialize a dictionary to store the knockoff statistics W_ij
+    knockoff_statistics = {}
+
+    # Iterate over feature pairs (i, j) where i < p and j < p
+    for i in range(p):
+        for j in range(i + 1, p):
+            # Calculate tilde indices
+            tilde_i = i + p
+            tilde_j = j + p
+
+            # Retrieve scores from the dictionary, defaulting to 0 if not present
+            score_ij = score_dict.get((i, j), 0)
+            score_i_tilde_j = score_dict.get((i, tilde_j), 0)
+            score_tilde_i_j = score_dict.get((j, tilde_i), 0)
+            score_tilde_i_tilde_j = score_dict.get((tilde_i, tilde_j), 0)
+
+            # Calculate W_ij
+            W_ij = score_ij - score_i_tilde_j - score_tilde_i_j + score_tilde_i_tilde_j
+            # W_ij = score_ij - score_i_tilde_j
+
+            # Store the result in the dictionary
+            knockoff_statistics[(i, j)] = W_ij
+
+    return knockoff_statistics
+
+def get_selected_interactions_ks(interactions, p, q):
+    # Calculate knockoff statistics W_ij
+    knockoff_statistics = calculate_knockoff_statistics(interactions, p)
+
+    # Sort the absolute values of knockoff statistics for thresholding
+    sorted_statistics = sorted(set(abs(W) for W in knockoff_statistics.values()))
+
+    T = np.inf
+    for t in sorted_statistics:
+        # Count the number of W_j <= -t
+        count_neg = sum(1 for W in knockoff_statistics.values() if W <= -t)
+        
+        # Count the number of W_j > t
+        count_pos = sum(1 for W in knockoff_statistics.values() if W > t)
+        
+        # Calculate the ratio and check the threshold condition
+        if count_pos > 0 and count_neg / count_pos <= q:
+            T = t
+            break
+
+    # Select interactions with W_ij > T
+    selected_interactions = [(ij, score) for ij, score in interactions if ij in knockoff_statistics and knockoff_statistics[ij] > T]
+
+    return selected_interactions, knockoff_statistics, T
+
 def get_interaction_type_idx(inter_indices_arr, p):
     TD_idx = []
     TT_idx = []
@@ -224,13 +283,21 @@ def get_selected_interactions(interactions, p, q):
         if score > q:
             break
     selected_interaction = []
+    selected_knockoffs = []
     for idx, score in interactions:
         i, j = idx
-        if score >= cutoff and (i < p) and (j < p):
-            selected_interaction.append((idx, score))
+        if score >= cutoff:
+            if (i < p) and (j < p):
+                selected_interaction.append((idx, score))
+            else:
+                selected_knockoffs.append((idx, score))
     
-    if cutoff == np.inf:
-        cutoff = np.max(inter_score_arr) + 1e-6
+    if len(selected_interaction) == 1 and len(selected_knockoffs) == 0:
+        selected_interaction = []
+    
+    max_score = np.max(inter_score_arr)
+    if cutoff == np.inf or len(selected_interaction) == 0:
+        cutoff = max_score + 1e-6
 
     return selected_interaction, cutoff
 
@@ -334,6 +401,61 @@ def get_q_values_3rd(interactions, p):
         q_values[idx] = score
 
     return q_values
+
+def calculate_knockoff_statistics_3rd(interaction_tuples, p):
+    # Initialize a dictionary to store the scores for each pair (i, j)
+    score_dict = {(i, j, k): score for ((i, j, k), score) in interaction_tuples}
+
+    # Initialize a dictionary to store the knockoff statistics W_ij
+    knockoff_statistics = {}
+
+    # Iterate over feature pairs (i, j) where i < p and j < p
+    for i in range(p):
+        for j in range(i + 1, p):
+            for k in range(j + 1, p):
+                # Calculate tilde indices
+                tilde_i = i + p
+                tilde_j = j + p
+                tilde_k = k + p
+
+                # Retrieve scores from the dictionary, defaulting to 0 if not present
+                score_ijk = score_dict.get((i, j, k), 0)
+                score_ij_tilde_k = score_dict.get((i, j, tilde_k), 0)
+                score_ik_tilde_j = score_dict.get((i, k, tilde_j), 0)
+                score_jk_tilde_i = score_dict.get((j, k, tilde_i), 0)
+
+                # Calculate W_ij
+                W_ijk = score_ijk - score_ij_tilde_k
+
+                # Store the result in the dictionary
+                knockoff_statistics[(i, j, k)] = W_ijk
+
+    return knockoff_statistics
+
+def get_selected_3rd_interactions_ks(interactions, p, q):
+    # Calculate knockoff statistics W_ij
+    knockoff_statistics = calculate_knockoff_statistics_3rd(interactions, p)
+
+    # Sort the absolute values of knockoff statistics for thresholding
+    sorted_statistics = sorted(set(abs(W) for W in knockoff_statistics.values()))
+
+    T = np.inf
+    for t in sorted_statistics:
+        # Count the number of W_j <= -t
+        count_neg = sum(1 for W in knockoff_statistics.values() if W <= -t)
+        
+        # Count the number of W_j > t
+        count_pos = sum(1 for W in knockoff_statistics.values() if W > t)
+        
+        # Calculate the ratio and check the threshold condition
+        if count_pos > 0 and count_neg / count_pos <= q:
+            T = t
+            break
+
+    # Select interactions with W_ij > T
+    selected_interactions = [(ijk, score) for ijk, score in interactions if ijk in knockoff_statistics and knockoff_statistics[ijk] > T]
+
+    return selected_interactions, knockoff_statistics, T
 
 
 def get_interaction_FDR_estimate(interactions, p, abs_diff=True, only_original=True):
