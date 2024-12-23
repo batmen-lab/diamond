@@ -4,6 +4,7 @@ Source code for **Error-controlled interaction discovery in machine learning mod
 ## Dataset
 
 Please unzip the `data.zip` file and put the `data` directory in the same directory as the `src` directory.
+Simulated data is automatically generated using the scripts in the `src/simulation` directory.
 
 ## Example Notebook
 
