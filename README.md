@@ -42,12 +42,13 @@ Example jupyter notebooks are provided in the `example` directory. You can run t
 
 ## 📂 Repository Structure
 
-diamond/
-├── src/ # Core implementation of Diamond
-├── example/ # Jupyter notebooks for demonstrations and experiments
-├── data.zip # Example datasets (to be unzipped)
-├── environment.yml # Conda environment specification
-└── README.md # Project overview and usage guide
+| Path               | Description                                |
+|--------------------|--------------------------------------------|
+| `src/`             | Core implementation of the Diamond method  |
+| `example/`         | Jupyter notebooks demonstrating usage      |
+| `data.zip`         | Compressed example datasets                |
+| `environment.yml`  | Conda environment specification            |
+| `README.md`        | Project overview and usage instructions    |
 
 ---
 
