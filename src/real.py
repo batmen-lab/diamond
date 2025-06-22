@@ -321,6 +321,8 @@ def train_and_explain(seed, dataset, model_type, knockoff, *args, **kwargs):
 
     with open(f'{output_dir}/{dataset}_seed{seed}.json', 'w') as f:
         json.dump(results_to_save, f)
+    
+    return f'{output_dir}/{dataset}_seed{seed}.json'
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
