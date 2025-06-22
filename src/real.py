@@ -14,6 +14,7 @@ from kan import KAN
 from lightning.pytorch import Trainer, seed_everything
 from path_explain import PathExplainerTorch
 from sklearn.utils import compute_class_weight
+from sklearn.datasets import dump_svmlight_file
 from torch.utils.data import DataLoader
 
 from knockoffs import (gen_DeepKnockoffs, gen_KnockoffGAN, gen_Knockoffsdiag,
@@ -42,6 +43,10 @@ def load_and_preprocess_data(dataset, knockoff, seed):
         X, Y, feat_names = prep_data.load_diabetes_data()
         inter_gt, import_gt = [], []
         task = 'regression'
+    elif dataset == "cal_housing":
+        X, Y, feat_names = prep_data.load_cal_housing_data()
+        inter_gt, import_gt = [], []
+        task = 'regression'
     else:
         raise ValueError("Invalid dataset: {}".format(dataset))
     
@@ -56,6 +61,8 @@ def load_and_preprocess_data(dataset, knockoff, seed):
         X_knockoff = gen_VAEKnockoff.train_vae_knockoff(X, n_epoch=100, mb_size=256)
     elif knockoff == 'knockoffsdiag':
         X_knockoff = gen_Knockoffsdiag.conditional_sequential_gen_ko(X, np.zeros(X.shape[1]), n_jobs=40, seed=seed)
+    else:
+        raise ValueError("Invalid knockoff: {}".format(knockoff))
     X_concat = np.concatenate((X, X_knockoff), axis=1)
 
     return X_concat, Y, inter_gt, import_gt, feat_names, task
@@ -216,12 +223,12 @@ def train_and_explain(seed, dataset, model_type, knockoff, *args, **kwargs):
         # Train the model
         if task == 'regression':
             model = lgb.LGBMRegressor(n_estimators=100,
-                                   device='gpu' if torch.cuda.is_available() else 'cpu',
+                                   device='cpu',
                                    random_state=seed)
         else:
             model = lgb.LGBMClassifier(n_estimators=100,
                                     scale_pos_weight=pos_weight, 
-                                    device='gpu' if torch.cuda.is_available() else 'cpu',
+                                    device='cpu',
                                     random_state=seed)
         model.fit(X, Y.ravel())
 
@@ -234,11 +241,12 @@ def train_and_explain(seed, dataset, model_type, knockoff, *args, **kwargs):
         
     elif model_type == 'fm':
         # Convert data to DMatrix format
-        dtrain = xl.DMatrix(X, label=Y.ravel())
+        dpath = os.path.join(output_dir, "train.txt")
+        dump_svmlight_file(X, Y.ravel(), dpath)
 
         # Train the model
         model = xl.create_fm()
-        model.setTrain(dtrain)
+        model.setTrain(dpath)
         if task == 'regression':
             param = {"task": "reg", "metric": "rmse", "epoch": 100}
         else:

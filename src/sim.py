@@ -18,6 +18,7 @@ from path_explain import PathExplainerTorch
 from shap import TreeExplainer
 from sklearn.discriminant_analysis import StandardScaler
 from sklearn.model_selection import train_test_split
+from sklearn.datasets import dump_svmlight_file
 from torch.optim import Adam
 from torch.utils.data import DataLoader, TensorDataset
 from torchmetrics.classification import BinaryAUROC
@@ -153,9 +154,9 @@ def train_and_explain(seed, func_num, model_type, knockoff, *args, **kwargs):
         checkpoint_callback = ModelCheckpoint(monitor='val_loss', save_top_k=1, mode='min')
 
         trainer = Trainer(max_epochs=100, 
-                        accelerator='gpu',
-                        callbacks=[early_stop_callback, checkpoint_callback],
-                        enable_checkpointing=True)
+                          accelerator='gpu',
+                          callbacks=[early_stop_callback, checkpoint_callback],
+                          enable_checkpointing=True)
         trainer.fit(model, data_module)
 
         # Load the best model
@@ -234,8 +235,7 @@ def train_and_explain(seed, func_num, model_type, knockoff, *args, **kwargs):
 
     elif model_type == 'lightgbm':
         # Train the model
-        model = lgb.LGBMRegressor(device='gpu' if torch.cuda.is_available() else 'cpu',
-                                  random_state=seed)
+        model = lgb.LGBMRegressor(device='cpu', random_state=seed)
         model.fit(X_train, Y_train.ravel(), 
                   eval_set=[(X_val, Y_val.ravel())], 
                   callbacks=[lgb.early_stopping(stopping_rounds=10)])
@@ -249,13 +249,15 @@ def train_and_explain(seed, func_num, model_type, knockoff, *args, **kwargs):
         
     elif model_type == 'fm':
         # Convert data to DMatrix format
-        dtrain = xl.DMatrix(X_train, label=Y_train.ravel())
-        dval = xl.DMatrix(X_val, label=Y_val.ravel())
+        dtrain_path = os.path.join(output_dir, "train.txt")
+        dump_svmlight_file(X_train, Y_train.ravel(), dtrain_path)
+        dval_path = os.path.join(output_dir, "val.txt")
+        dump_svmlight_file(X_val, Y_val.ravel(), dval_path)
 
         # Train the model
         model = xl.create_fm()
-        model.setTrain(dtrain)
-        model.setValidate(dval)
+        model.setTrain(dtrain_path)
+        model.setValidate(dval_path)
         param = {"task": "reg", "metric": "rmse", "epoch": 100, "stop_window": 10}
         model.setTXTModel(f"{output_dir}/func{func_num}_seed{seed}.txt")
         model.fit(param, f"{output_dir}/func{func_num}_seed{seed}.out")
@@ -311,6 +313,8 @@ def train_and_explain(seed, func_num, model_type, knockoff, *args, **kwargs):
     }
     with open(f'{output_dir}/func{func_num}_seed{seed}.json', 'w') as f:
         json.dump(results_to_save, f)
+
+    return f'{output_dir}/func{func_num}_seed{seed}.json'
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()

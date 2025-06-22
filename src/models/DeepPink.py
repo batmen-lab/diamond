@@ -366,7 +366,7 @@ class DeepPINK(torch.nn.Module):
                 weights = []
                 for name, param in self.mlp.named_parameters():
                     print(name)
-                    if "mlp" in name and "weight" in name:
+                    if "weight" in name:
                         weights.append(param.cpu().detach().numpy())
                 return weights
             else:
