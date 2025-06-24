@@ -1,3 +1,5 @@
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.15733825.svg)](https://doi.org/10.5281/zenodo.15733825)
+
 # 🛡️ Diamond: Error-Controlled Interaction Discovery
 
 **Diamond** is a Python library for discovering feature interactions in machine learning models **with rigorous false discovery rate (FDR) control**. It is particularly useful for scientific and biomedical applications where interaction interpretability and statistical reliability are essential.
